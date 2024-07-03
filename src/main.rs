@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Result, Write},
     net::{TcpListener, TcpStream},
 };
 
@@ -27,27 +27,43 @@ fn handle_connection(mut stream: TcpStream) {
         .map(|result| result.unwrap())
         .take_while(|line| !line.is_empty())
         .collect();
-    println!("{:?}", http_request);
-    let path = extarct_url_path(&http_request[0]);
 
-    handle_path(path, stream);
+    let request_line = &http_request.first().unwrap();
+    let user_agent = http_request
+        .iter()
+        .filter_map(|v| {
+            if v.contains("User-Agent") {
+                Some(v.trim_start_matches("User-Agent: ").to_string())
+            } else {
+                None
+            }
+        })
+        .next();
+
+    let (_, path) = parse_request_line(request_line).unwrap();
+
+    handle_path(&path, &user_agent.unwrap_or("".to_string()), stream);
 }
 
 // add better parsing
 // differentiate between methods like GET, POST, DELETE
-fn extarct_url_path(input: &str) -> &str {
+fn parse_request_line(input: &str) -> Result<(String, String)> {
     let request_line: Vec<&str> = input.split_whitespace().collect();
+    let method = request_line.first().unwrap();
+    let path = request_line[1];
 
-    request_line[1]
+    Ok((method.to_string(), path.to_string()))
 }
 
-fn handle_path(path: &str, mut stream: TcpStream) {
+fn handle_path(path: &str, user_agent: &str, mut stream: TcpStream) {
     if path == "/" {
         let response = "HTTP/1.1 200 OK\r\n\r\n";
         stream.write_all(response.as_bytes()).unwrap();
-    } else if path.contains("echo") {
+    } else if path.contains("/echo/") {
         let input = path.strip_prefix("/echo/").unwrap();
         echo(input, stream);
+    } else if path.contains("/user-agent") {
+        echo(user_agent, stream);
     } else {
         let response = "HTTP/1.1 404 Not Found\r\n\r\n";
         stream.write_all(response.as_bytes()).unwrap();
