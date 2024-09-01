@@ -1,11 +1,16 @@
 use std::{
-    io::{BufRead, BufReader, Result, Write},
+    env,
+    fs::File,
+    io::{self, BufRead, BufReader, Result, Write},
     net::{TcpListener, TcpStream},
     thread,
 };
 
 fn main() {
-    let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
+    let port = 4221;
+    println!("Serving on port: {}", port);
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
 
     for stream in listener.incoming() {
         match stream {
@@ -20,7 +25,6 @@ fn main() {
     }
 }
 
-// maybe concurrency?
 fn handle_connection(mut stream: TcpStream) {
     let buf_reader = BufReader::new(&mut stream);
     let http_request: Vec<_> = buf_reader
@@ -43,7 +47,7 @@ fn handle_connection(mut stream: TcpStream) {
 
     let (_, path) = parse_request_line(request_line).unwrap();
 
-    handle_path(&path, &user_agent.unwrap_or("".to_string()), stream);
+    handle_path(&path, &user_agent.unwrap_or("".to_string()), stream).unwrap();
 }
 
 // add better parsing
@@ -56,24 +60,28 @@ fn parse_request_line(input: &str) -> Result<(String, String)> {
     Ok((method.to_string(), path.to_string()))
 }
 
-fn handle_path(path: &str, user_agent: &str, mut stream: TcpStream) {
+fn handle_path(path: &str, user_agent: &str, mut stream: TcpStream) -> io::Result<()> {
     if path == "/" {
         let response = "HTTP/1.1 200 OK\r\n\r\n";
         stream.write_all(response.as_bytes()).unwrap();
-    } else if path.contains("/echo/") {
+    }
+    if path.contains("/echo/") {
         let input = path.strip_prefix("/echo/").unwrap();
-        echo(input, stream);
-    } else if path.contains("/user-agent") {
-        echo(user_agent, stream);
+        echo(input, &stream)?
+    }
+    if path.contains("/user-agent") {
+        echo(user_agent, &stream)?
+    }
+    if path.contains("/files/") {
+        let input = path.strip_prefix("/files/").unwrap();
+        read(input, &stream)
     } else {
         let response = "HTTP/1.1 404 Not Found\r\n\r\n";
-        stream.write_all(response.as_bytes()).unwrap();
+        stream.write_all(response.as_bytes())
     }
 }
-// add path /echo/{str}
-// in which it responds with `str` in the body
-// additional headers like Content-Type and Content-Length
-fn echo(input: &str, mut stream: TcpStream) {
+
+fn echo(input: &str, mut stream: &TcpStream) -> io::Result<()> {
     let content_type = "text/plain";
     let content_length = input.len();
 
@@ -81,10 +89,32 @@ fn echo(input: &str, mut stream: TcpStream) {
         "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}\r\n",
         content_type, content_length, input
     );
-    stream.write_all(response.as_bytes()).unwrap();
+
+    stream.write_all(response.as_bytes())
 }
 
-// add path /read/{file} in which it reads a file on
-// the server and returns it in the response body
+fn read(input: &str, mut stream: &TcpStream) -> io::Result<()> {
+    let envs: Vec<String> = env::args().collect();
+    let dir = envs[2].clone();
+    let path = format!("{}/{}", dir, input);
+    if let Ok(f) = File::open(path) {
+        let mut buffer = String::new();
+        let mut reader = BufReader::new(f);
+
+        reader.read_line(&mut buffer)?;
+
+        let content_type = "application/octet-stream";
+        let content_length = buffer.len();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}\r\n",
+            content_type, content_length, buffer
+        );
+
+        stream.write_all(response.as_bytes())
+    } else {
+        let response = "HTTP/1.1 404 Not Found\r\n\r\n";
+        stream.write_all(response.as_bytes())
+    }
+}
 
 // add path /upload/{file} to upload to the server
